@@ -104,12 +104,15 @@ public class LookUpClient {
 			output.flush();
 			String out = "";
 			try {
+
 				out = input.readLine();
 				if (out == null || !out.split(":")[0].equals(Integer.toString(MSG_TYPE.NORMAL.getValue())))
 					break;
-				System.out.print(out.split(":")[1] + "\n");
-				while(!(out = input.readLine()).equals("||END||"))
-					System.out.println(out);
+				//System.out.println(out.split(":")[1]);
+				while(!(out = input.readLine()).equals("||END||"));
+					//System.out.println(out);
+				//System.out.println();
+
 			}
 			catch (IOException e) {
 				e.printStackTrace();
@@ -158,29 +161,28 @@ public class LookUpClient {
 
 		try {
 
-			BufferedReader input = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-
-			// Read welcome message
-			String line = input.readLine();
-			if (line == null) {
-
-				//input.close();
-				return false;
-
-			}
-
-			line = line.trim();
-			if (!line.split(":")[0].equals(Integer.toString(MSG_TYPE.WELCOME.getValue()))) {
-
-				//input.close();
-				return false;
-
-			}
-
-			PrintWriter output = new PrintWriter(clientSocket.getOutputStream());
-
 			int count = 0;
+			String line = "";
 			do {
+
+				BufferedReader input = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+	
+				// Read welcome message
+				line = input.readLine();
+				if (line == null) {
+	
+					return false;
+	
+				}
+	
+				line = line.trim();
+				if (!line.split(":")[0].equals(Integer.toString(MSG_TYPE.WELCOME.getValue()))) {
+	
+					return false;
+	
+				}
+	
+				PrintWriter output = new PrintWriter(clientSocket.getOutputStream());
 
 				output.print(MSG_TYPE.CONFIRM.getValue() + ":" + userName + "\r\n");
 				output.flush();
@@ -188,24 +190,16 @@ public class LookUpClient {
 				line = input.readLine();
 				if (line == null) {
 
-					//input.close();
-					//output.close();
 					return false;
 
 				}
 				line = line.trim();
-				if (line.split(":")[0].equals(Integer.toString(MSG_TYPE.TERMINATE.getValue()))) {
-
-					//input.close();
-					//output.close();
-					return false;
-
-				}
-				else if (!line.split(":")[0].equals(Integer.toString(MSG_TYPE.CONFIRM.getValue()))) {
-					System.out.println("Username is already in use. Choose a different one");
+				if (!line.split(":")[0].equals(Integer.toString(MSG_TYPE.CONFIRM.getValue()))) {
+					System.out.println("Username is already in use.");
 					if ((count + 1) < 3) {
 						try {
 							clientSocket.close();
+							clientSocket = new Socket();
 							askForUserName();
 							clientSocket.connect(new InetSocketAddress(this.ip, this.port));
 						}
@@ -217,8 +211,6 @@ public class LookUpClient {
 
 			} while ((++count) < 3 && !line.split(":")[0].equals(Integer.toString(MSG_TYPE.CONFIRM.getValue())));
 
-			//input.close();
-			//output.close();
 			if (count < 3 && line.split(":")[0].equals(Integer.toString(MSG_TYPE.CONFIRM.getValue())))
 				return true;
 

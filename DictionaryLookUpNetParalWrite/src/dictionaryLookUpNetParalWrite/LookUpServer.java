@@ -11,9 +11,10 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.concurrent.Semaphore;
@@ -22,16 +23,16 @@ public class LookUpServer {
 
 	private static final int MAX_THREADS = (Runtime.getRuntime().availableProcessors() - 1);
 	private static final int MAX_CLIENTS = (MAX_THREADS * 10);
-	public final Semaphore availableJobs = new Semaphore(0, true);
+
+	public final Semaphore availableUsers = new Semaphore(0, true);
 
 	private File dictFile = null;
 	private volatile String ip = "";
 	private volatile int port = 4444;
 	private ServerSocket serverSocket = null;
 	private volatile boolean isRunning = false;
-	private HashMap<String, Socket> userSockets = null;
+	private Queue<UserSocket> userSockets = null;
 	private ArrayList<ClientThread> threadPool = null;
-	private Queue<String> jobs = null;
 
 	public static enum MSG_TYPE {
 
@@ -53,13 +54,114 @@ public class LookUpServer {
 
 	}
 
+	private class UserSocket {
+
+		public String username = "";
+		public Socket socket = null;
+
+		public UserSocket(String name, Socket s) {
+
+			super();
+			username = name;
+			socket = s;
+
+		}
+
+	}
+
 	private class ManagerThread extends Thread {
 
 		private LookUpServer parrent = null;
+		private Queue<String> words = null;
+		private Queue<UserSocket> clients = null;
 
 		public ManagerThread(LookUpServer lus) {
+
 			super();
 			parrent = lus;
+			words = new LinkedList<String>();
+			clients = new LinkedList<UserSocket>();
+
+		}
+		
+		private void addWordToQueue() {
+
+			try {
+				parrent.availableUsers.acquire();
+			}
+			catch (InterruptedException e) {
+			    e.printStackTrace();
+			}
+			UserSocket userSocket = peekParrentSocket();
+
+			if (userSocket != null) {
+
+				int currentTimeOut = 0;
+				BufferedReader input = null;
+				String in = null;
+				try {
+
+					currentTimeOut = userSocket.socket.getSoTimeout();
+					userSocket.socket.setSoTimeout(100);
+					input = new BufferedReader(new InputStreamReader(userSocket.socket.getInputStream()));
+
+				}
+				catch (IOException e) {
+					e.printStackTrace();
+				}
+				try {
+					in = input.readLine();
+				}
+				catch (IOException e1) {
+				}
+				try {
+					userSocket.socket.setSoTimeout(currentTimeOut);
+				}
+				catch (SocketException e2) {
+				}
+				if (in == null) {
+
+					synchronized(parrent.getSockets()) {
+						pollParrentSocket();
+						addParrentSocket(userSocket);
+					}
+					parrent.availableUsers.release();
+
+				}
+				else {
+
+					in = in.trim();
+					if (in.split(":")[0].equals(Integer.toString(MSG_TYPE.NORMAL.getValue()))) {
+
+						words.add(in.split(":")[1].trim());
+						clients.add(new UserSocket(userSocket.username, userSocket.socket));
+						synchronized(parrent.getSockets()) {
+							pollParrentSocket();
+							addParrentSocket(userSocket);
+						}
+						parrent.availableUsers.release();
+
+					}
+					else {
+						try {
+
+							PrintWriter output = new PrintWriter(userSocket.socket.getOutputStream());
+							output.print(Integer.toString(MSG_TYPE.TERMINATE.getValue()) + ":\r\n");
+							output.flush();
+							pollParrentSocket();
+							userSocket.socket.close();
+
+						}
+						catch (IOException e) {
+						}
+					}
+
+				}
+
+			}
+			else
+				pollParrentSocket();
+
 		}
 
 		@Override
@@ -67,31 +169,28 @@ public class LookUpServer {
 			
 			while (getParrentIsRunning()) {
 
-				try {
-					parrent.availableJobs.acquire();
-				}
-				catch (InterruptedException e) {
-					e.printStackTrace();
-				}
-				boolean useKey = false;
-				for (ClientThread ct : getParrentThreads()) {
-					if (ct.getIsRunning() && !ct.isProcessingWord()) {
+				assert(words.size() == clients.size());
+				addWordToQueue();
+				assert(words.size() == clients.size());
 
-						String key = getParrentJobs().poll();
-						if (key != null) {
-
-							System.out.println("Thread ID: " + getId() + " Assigning thread ID: " + ct.getId() + " to a work for Username: " + key);
-							ct.processWord(key);
-							useKey = true;
-							break;
-
+				if (words.size() > 0)
+					for (ClientThread ct : getParrentThreads()) {
+	
+						if (ct.getIsRunning() && !ct.isProcessingWord()) {
+	
+							String word = words.poll();
+							UserSocket client = clients.poll();
+							if (word != null && client != null) {
+	
+								System.out.println("Thread ID: " + getId() + " Assigning thread ID: " + ct.getId() + " to a work for Username: " + client.username + " on word: " + word);
+								ct.processWord(client, word);
+								break;
+	
+							}
+	
 						}
 
 					}
-
-				}
-				if (!useKey)
-					parrent.availableJobs.release();
 
 			}
 			for (ClientThread ct : getParrentThreads()) {
@@ -111,14 +210,27 @@ public class LookUpServer {
 				return parrent.getIsRunning();
 			}
 		}
-		private Queue<String> getParrentJobs() {
-			synchronized(parrent) {
-				return parrent.getJobs();
-			}
-		}
+
 		private ArrayList<ClientThread> getParrentThreads() {
 			synchronized(parrent) {
 				return parrent.getThreads();
+			}
+		}
+
+		private void addParrentSocket(UserSocket us) {
+			synchronized (parrent) {
+				parrent.addSocket(us);
+			}
+		}
+		private UserSocket pollParrentSocket() {
+			synchronized (parrent) {
+				return parrent.pollUserSocket();
+			}
+		}
+
+		private UserSocket peekParrentSocket() {
+			synchronized (parrent) {
+				return parrent.peekUserSocket();
 			}
 		}
 
@@ -131,7 +243,7 @@ public class LookUpServer {
 		private volatile boolean isRunning = false;
 		private LookUpServer parrent = null;
 		private volatile String word = "";
-		private volatile String clientName = "";
+		private UserSocket client = null;
 
 		public ClientThread(LookUpServer lus) {
 
@@ -210,59 +322,32 @@ public class LookUpServer {
 			while (isRunning && getParrentIsRunning()) {
 
 				try {
+					sleep(10000);
 					available.acquire();
 				}
 				catch (InterruptedException e) {
 					e.printStackTrace();
 				}
-				if (isRunning && getParrentIsRunning() && !word.equals("") && !clientName.equals("")) {
+				if (isRunning && getParrentIsRunning() && !word.equals("") && client != null) {
 
 					PrintWriter output = null;
-					BufferedReader input = null;
 					synchronized(userSockets) {
 						try {
-							output = new PrintWriter(userSockets.get(clientName).getOutputStream());
-							input = new BufferedReader(new InputStreamReader(userSockets.get(clientName).getInputStream()));
+							output = new PrintWriter(client.socket.getOutputStream());
 						}
 						catch (IOException e) {
 							e.printStackTrace();
 						}
 
 					}
-					boolean lastWord = false;
-					do {
 
-						System.out.println("Thread ID: " + this.getId() + "-- Searching for word: " + word);
-						String out = getDef(getParrentDictFile(), word);
-						output.print(Integer.toString(MSG_TYPE.NORMAL.getValue()) + ":" + out + "||END||" + "\r\n");
-						output.flush();
-
-						try {
-							word = input.readLine().trim();
-						}
-						catch (IOException e) {
-							e.printStackTrace();
-						}
-						if (word.split(":")[0].equals(Integer.toString(MSG_TYPE.NORMAL.getValue())))
-							word = word.split(":")[1].trim();
-						else
-							lastWord = true;
-
-					} while(!lastWord);
-
+					System.out.println("Thread ID: " + this.getId() + "-- Searching for word: " + word);
+					String out = getDef(getParrentDictFile(), word);
+					output.print(Integer.toString(MSG_TYPE.NORMAL.getValue()) + ":" + out + "||END||" + "\r\n");
+					output.flush();
 					synchronized(this) {
-
-						removeParrentUsername();
-						this.word = "";
-						this.clientName = "";
-//						try {
-//							output.close();
-//							input.close();
-//						}
-//						catch (IOException e) {
-//							e.printStackTrace();
-//						}
-
+						word = "";
+						client = null;
 					}
 
 				}
@@ -278,37 +363,22 @@ public class LookUpServer {
 			isRunning = isRun;
 		}
 
-		public void processWord(String clientName) {
+		public void processWord(UserSocket client, String word) {
+
 			synchronized(this) {
-				if (this.clientName.equals("") && this.word.equals("")) {
+				if (this.client == null && this.word.equals("")) {
 
-					try {
-
-						synchronized(userSockets) {
-
-							BufferedReader input = new BufferedReader(new InputStreamReader(userSockets.get(clientName).getInputStream()));
-							word = input.readLine().trim();
-
-						}
-
-					}
-					catch (IOException e) {
-						e.printStackTrace();
-					}
-					if (word.split(":")[0].equals(Integer.toString(MSG_TYPE.NORMAL.getValue()))) {
-
-						this.clientName = clientName;
-						word = word.split(":")[1].trim();
-						available.release();
-
-					}
+					this.client = client;
+					this.word = word;
+					available.release();
 
 				}
 			}
+
 		}
 		public boolean isProcessingWord() {
 			synchronized(this) {
-				return (!clientName.equals("") && !word.equals(""));
+				return (client != null && !word.equals(""));
 			}
 		}
 
@@ -320,11 +390,6 @@ public class LookUpServer {
 		private File getParrentDictFile() {
 			synchronized(parrent) {
 				return parrent.getDictFile();
-			}
-		}
-		private void removeParrentUsername() {
-			synchronized(parrent) {
-				parrent.removeUsername(this.clientName);
 			}
 		}
 
@@ -352,8 +417,7 @@ public class LookUpServer {
 		catch (IOException e) {
 			e.printStackTrace();
 		}
-		userSockets = new HashMap<String, Socket>(MAX_CLIENTS);
-		jobs = new LinkedList<String>();
+		userSockets = new LinkedList<UserSocket>();
 		threadPool = new ArrayList<ClientThread>(MAX_THREADS);
 		isRunning = true;
 		for (int i = 0; i < MAX_THREADS; i++) {
@@ -374,14 +438,24 @@ public class LookUpServer {
 		return dictFile;
 	}
 
-	public Queue<String> getJobs() {
-		return jobs;
-	}
 	public ArrayList<ClientThread> getThreads() {
 		return threadPool;
 	}
-	public void removeUsername(String name) {
-		userSockets.remove(name);
+
+	public UserSocket pollUserSocket() {
+		return userSockets.poll();
+	}
+
+	public UserSocket peekUserSocket() {
+		return userSockets.peek();
+	}
+
+	public Queue<UserSocket> getSockets() {
+		return userSockets;
+	}
+	
+	public void addSocket(UserSocket us) {
+		userSockets.add(us);
 	}
 
 	public void acceptUser(Socket newClientSocket) throws IOException {
@@ -395,62 +469,52 @@ public class LookUpServer {
 		String line = "";
 		int count = 0;
 		boolean validUsername = true;
-		//do {
+		line = input.readLine();
+		if (line == null)
+			return;
 
-			validUsername = true;
-			line = input.readLine();
-			if (line == null) {
+		line = line.trim();
+		if (!line.split(":")[0].equals(Integer.toString(MSG_TYPE.CONFIRM.getValue()))) {
 
-//				input.close();
-//				output.close();
-				return;
-
-			}
-			line = line.trim();
-			if (!line.split(":")[0].equals(Integer.toString(MSG_TYPE.CONFIRM.getValue()))) {
-
-				output.print(MSG_TYPE.TERMINATE.getValue() + ":" + "Invalid message\r\n");
-				output.flush();
-//				output.close();
-//				input.close();
-				return;
-
-			}
-			line = line.split(":")[1];
-			line = line.trim();
-			synchronized(userSockets) {
-				for (String user : userSockets.keySet()) {
-					if (user.toUpperCase().equals(line.toUpperCase())) {
-
-						output.print(MSG_TYPE.TERMINATE.getValue() + ":" + "Invalid username\r\n");
-						output.flush();
-						validUsername = false;
-						break;
-
-					}
-				}
-			}
-
-		//} while((++count) < 3 && !validUsername);
-		if (count >= 3 || !validUsername) {
-
-//			input.close();
-//			output.close();
+			output.print(MSG_TYPE.TERMINATE.getValue() + ":" + "Invalid message\r\n");
+			output.flush();
 			return;
 
 		}
+		line = line.split(":")[1];
+		line = line.trim();
+		synchronized(userSockets) {
+
+			Iterator<UserSocket> listIterator = userSockets.iterator();
+	        while (listIterator.hasNext()) {
+
+	        	UserSocket user = listIterator.next();
+				if (user.username.toUpperCase().equals(line.toUpperCase())) {
+
+					output.print(MSG_TYPE.TERMINATE.getValue() + ":" + "Invalid username\r\n");
+					output.flush();
+					validUsername = false;
+					newClientSocket.close();
+					break;
+
+				}
+
+	        }
+
+		}
+
+		if (count >= 3 || !validUsername)
+			return;
+
 		output.print(MSG_TYPE.CONFIRM.getValue() + ":" + "Username confirmed as " + line + "\r\n");
 		output.flush();
 
 		synchronized(userSockets) {
 
-			userSockets.put(line, newClientSocket);
-			jobs.add(line);
-			availableJobs.release();
+			userSockets.add(new UserSocket(line, newClientSocket));
+			availableUsers.release();
 
 		}
-		//input.close();
-		//output.close();
 
 	}
 
