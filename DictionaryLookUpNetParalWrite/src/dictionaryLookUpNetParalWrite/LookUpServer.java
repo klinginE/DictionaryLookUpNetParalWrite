@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
@@ -25,6 +26,7 @@ public class LookUpServer {
 	private static final int MAX_CLIENTS = (MAX_THREADS * 10);
 
 	public final Semaphore availableUsers = new Semaphore(0, true);
+	public final Semaphore writeFileLock = new Semaphore(1, true);
 
 	private File dictFile = null;
 	private volatile String ip = "";
@@ -181,7 +183,8 @@ public class LookUpServer {
 							String word = words.poll();
 							UserSocket client = clients.poll();
 							if (word != null && client != null) {
-	
+
+								word = word.toUpperCase().replaceAll("([^A-Z0-9-])+", "");
 								System.out.println("Thread ID: " + getId() + " Assigning thread ID: " + ct.getId() + " to a work for Username: " + client.username + " on word: " + word);
 								ct.processWord(client, word);
 								break;
@@ -252,6 +255,55 @@ public class LookUpServer {
 
 		}
 
+		private void addWord(File dictFile, String word) throws IOException {
+
+			try {
+				parrent.writeFileLock.acquire();
+			}
+			catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+			PrintWriter pr = null;
+			BufferedReader br = null;
+			File temp = new File(Paths.get(System.getProperty("user.dir"), "temp.txt").toUri());
+			temp.setExecutable(dictFile.canExecute());
+			temp.setReadable(dictFile.canRead());
+			temp.setWritable(true);
+			try {
+				temp.createNewFile();
+				pr = new PrintWriter(new FileWriter(temp, true));
+				br = new BufferedReader(new FileReader(dictFile));
+			}
+			catch (IOException e1) {
+				e1.printStackTrace();
+			}
+
+			String line = "";
+			boolean wroteWord = false;
+			while ((line = br.readLine()) != null) {
+
+				if (!wroteWord && line.matches("([A-Z0-9-])+") && line.compareTo(word.toUpperCase()) > 0) {
+					pr.println(word.toUpperCase() + "\n");
+					wroteWord = true;
+				}
+				if (!wroteWord && line.equals("End of Project Gutenberg's Webster's Unabridged Dictionary, by Various")) {
+
+					pr.println(word.toUpperCase() + "\n");
+					wroteWord = true;
+
+				}
+				pr.println(line);
+
+			}
+			temp.setWritable(dictFile.canWrite());
+			dictFile.delete();
+			temp.renameTo(dictFile);
+			br.close();
+			pr.close();
+			parrent.writeFileLock.release();
+
+		}
+		
 		private String getDef(File dictFile, String word) {
 
 			BufferedReader br = null;
@@ -266,24 +318,36 @@ public class LookUpServer {
 			String output = "";
 
 			if (word.equals(""))
-				return "word not found. Perhaps you misspelled it.\n";
+				return "No word given\r\n";
 
 			try {
 
 				boolean wordFound = false;
+				try {
+					parrent.writeFileLock.acquire();
+				}
+				catch (InterruptedException e) {
+					e.printStackTrace();
+				}
 				while ((line = br.readLine()) != null) {
 
 					if (line.equals(word)) {
 
 						wordFound = true;
 						output += line;
-						output += "\n";
+						output += "\r\n";
 						while((line = br.readLine()) != null) {
 
-							if (line.matches("([A-Z])+") && !line.equals(word) && !line.equals(""))
+							if (line.matches("([A-Z0-9-])+") && !line.equals(word) && !line.equals(""))
 								break;
+							if (line.equals("End of Project Gutenberg's Webster's Unabridged Dictionary, by Various")) {
+
+								line = null;
+								break;
+
+							}
 							output += line;
-							output += "\n";
+							output += "\r\n";
 
 						}
 						if (line == null)
@@ -292,10 +356,14 @@ public class LookUpServer {
 					}
 
 				}
+				parrent.writeFileLock.release();
 				if (!wordFound) {
 
 					output += word;
-				    output += " not found. Perhaps you misspelled it.\n";
+					output += " not found. Adding word to dictionary.\r\n";
+					System.out.println("Thread ID: " + getId() + "-- did not find " + word + " in the dictionary.");
+					System.out.println("Thread ID: " + getId() + "-- adding: " + word + " to the dictionary.");
+				    addWord(dictFile, word);
 
 				}
 
@@ -322,7 +390,7 @@ public class LookUpServer {
 			while (isRunning && getParrentIsRunning()) {
 
 				try {
-					sleep(10000);
+					//sleep(10000);
 					available.acquire();
 				}
 				catch (InterruptedException e) {
@@ -343,7 +411,7 @@ public class LookUpServer {
 
 					System.out.println("Thread ID: " + this.getId() + "-- Searching for word: " + word);
 					String out = getDef(getParrentDictFile(), word);
-					output.print(Integer.toString(MSG_TYPE.NORMAL.getValue()) + ":" + out + "||END||" + "\r\n");
+					output.print(Integer.toString(MSG_TYPE.NORMAL.getValue()) + ":" + out + "\r\n||END||" + "\r\n");
 					output.flush();
 					synchronized(this) {
 						word = "";

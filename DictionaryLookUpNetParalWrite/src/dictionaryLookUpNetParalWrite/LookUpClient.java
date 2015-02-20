@@ -108,10 +108,10 @@ public class LookUpClient {
 				out = input.readLine();
 				if (out == null || !out.split(":")[0].equals(Integer.toString(MSG_TYPE.NORMAL.getValue())))
 					break;
-				//System.out.println(out.split(":")[1]);
-				while(!(out = input.readLine()).equals("||END||"));
-					//System.out.println(out);
-				//System.out.println();
+				System.out.println(out.split(":")[1]);
+				while(!((out = input.readLine()).trim().equals("||END||")))
+					System.out.println(out);
+				System.out.println();
 
 			}
 			catch (IOException e) {
