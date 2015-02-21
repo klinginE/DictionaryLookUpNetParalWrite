@@ -282,10 +282,14 @@ public class LookUpServer {
 			boolean wroteWord = false;
 			while ((line = br.readLine()) != null) {
 
+				if (line.equals(word.toUpperCase()))
+					wroteWord = true;
+
 				if (!wroteWord && line.matches("([A-Z0-9-])+") && line.compareTo(word.toUpperCase()) > 0) {
 					pr.println(word.toUpperCase() + "\n");
 					wroteWord = true;
 				}
+
 				if (!wroteWord && line.equals("End of Project Gutenberg's Webster's Unabridged Dictionary, by Various")) {
 
 					pr.println(word.toUpperCase() + "\n");
@@ -304,9 +308,10 @@ public class LookUpServer {
 
 		}
 		
-		private String getDef(File dictFile, String word) {
+		private String getDef(File dictFile, String word) throws InterruptedException {
 
 			BufferedReader br = null;
+			parrent.writeFileLock.acquire();
 			try {
 				br = new BufferedReader(new FileReader(dictFile));
 			}
@@ -317,18 +322,15 @@ public class LookUpServer {
 			String line = "";
 			String output = "";
 
-			if (word.equals(""))
+			if (word.equals("")) {
+
+				parrent.writeFileLock.release();
 				return "No word given\r\n";
+			}
 
 			try {
 
 				boolean wordFound = false;
-				try {
-					parrent.writeFileLock.acquire();
-				}
-				catch (InterruptedException e) {
-					e.printStackTrace();
-				}
 				while ((line = br.readLine()) != null) {
 
 					if (line.equals(word)) {
@@ -354,7 +356,6 @@ public class LookUpServer {
 							break;
 
 					}
-
 				}
 				parrent.writeFileLock.release();
 				if (!wordFound) {
@@ -410,7 +411,13 @@ public class LookUpServer {
 					}
 
 					System.out.println("Thread ID: " + this.getId() + "-- Searching for word: " + word);
-					String out = getDef(getParrentDictFile(), word);
+					String out = "";
+					try {
+						out = getDef(getParrentDictFile(), word);
+					}
+					catch (InterruptedException e) {
+						e.printStackTrace();
+					}
 					output.print(Integer.toString(MSG_TYPE.NORMAL.getValue()) + ":" + out + "\r\n||END||" + "\r\n");
 					output.flush();
 					synchronized(this) {
